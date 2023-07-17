@@ -1,0 +1,184 @@
+---
+title: "SSPPI Strengths"
+author: Rémi Daigle, Jaimie Harbin, Catalina Gomez
+format: 
+  html: 
+    code-fold: true
+    code-tools: true
+    toc: true
+    toc_float: true
+    embed-resources: true
+---
+
+
+
+```{r loading packages,warning=FALSE,message=FALSE}
+require(tidyverse)
+require(ggwordcloud)
+require(ggraph)
+require(igraph)
+require(grid)
+require(gridExtra)
+require(cowplot)
+```
+ First we read in the data from the [team survey](https://forms.office.com/r/aq4SMKM83a), the team was asked to share their top 5 CliftonStrengths after the group exercise(s). For more information about this team exercise, please visit the [Inner Strengths Exercise](https://086gc.sharepoint.com/sites/SciencePlanningAdviceandDataSPAD/SitePages/Inner-Strengths-Exercise.aspx)
+ 
+```{r reading data and wrangling}
+domains <- read.csv("domains.csv")
+
+strengths <- readxl::read_xlsx("Our Super Powers (1-15).xlsx",
+                               skip=1,
+                               col_names = c("ID",
+                                             "Start_time",
+                                             "Completion_time",
+                                             "Email",
+                                             "Name",
+                                             "Last_modified_time",
+                                             "Top_5_strengths")) %>% 
+  tidyr::separate_longer_delim(Top_5_strengths,delim=";") %>%
+  mutate(Top_5_strengths=replace(Top_5_strengths,Top_5_strengths=="Responsability",c("Responsibility"))) %>% 
+  mutate(Top_5_strengths=replace(Top_5_strengths,Top_5_strengths=="Self-assurance",c("Self-Assurance"))) %>%
+  filter(Top_5_strengths!="",ID!=7) %>% 
+  left_join(domains,by=c("Top_5_strengths"="Strength"))
+
+counts <- strengths %>% 
+  group_by(Top_5_strengths,Domain) %>% 
+  reframe(n=n())
+```
+
+# Frequency and Evenness
+
+Now let's look at how frequently each strength was identified our team. Below is a frequency plot for the whole team and the colours indicate the strength's domain.
+
+```{r evenness plot}
+colors <- c("Executing"="#2c7bb6",
+            "Influencing"="#abd9e9",
+            "Relationship Building"="#fdae61",
+            "Strategic Thinking"="#d7191c")
+
+p <- ggplot(counts %>% 
+              select(-Domain) %>% 
+              full_join(domains,by=c("Top_5_strengths"="Strength")) %>% 
+              mutate(n=if_else(is.na(n),0,n),
+                     Top_5_strengths=factor(Top_5_strengths,levels=domains$Strength,ordered=TRUE))
+              )+
+  geom_col(aes(x=Top_5_strengths,y=n,fill=Domain),color="transparent")+
+  # scale_fill_brewer(palette="RdYlBu",type="qual",direction=-1)
+  scale_fill_manual(values=colors)+
+  theme_classic()+
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5))
+p
+```
+
+
+Below is the same information, but as a word cloud with size being scaled to frequency (yes, I begrudgingly had to plot the legend separately for now):
+
+```{r wordcloud}
+
+ggplot(counts)+
+  geom_text_wordcloud(aes(label=Top_5_strengths,size=n,color=Domain))+
+  scale_size_area(max_size = 15) +
+  # scale_color_brewer(palette="RdYlBu",type="qual",direction=-1)+
+  scale_color_manual(values=colors)+
+  theme_minimal()
+
+l <- get_legend(p)
+grid.newpage()
+grid.draw(l)
+```
+
+# Similarity Networks
+
+To see the similarity between team members in terms of matching strengths, I created a network graph that shows the number of matching strengths between team members as the thickness of the lines.
+
+```{r simple graph}
+nodes <- unique(strengths$Name)
+edgelist <- data.frame()
+for(i in nodes){
+  for(j in nodes){
+    if(i!=j&!any(edgelist$id1==j&edgelist$id2==i)){
+      s1 <- strengths$Top_5_strengths[strengths$Name==i]
+      s2 <- strengths$Top_5_strengths[strengths$Name==j]
+      if(any(s1 %in% s2)){
+      edgelist <- rbind(edgelist,
+                        data.frame(
+                          id1=i,
+                          id2=j,
+                          similarity=as.integer(sum(s1 %in% s2)
+                        )))
+      }
+      
+      
+    }
+  
+}
+}
+
+
+```
+
+```{r simple graph plot, message=FALSE, warning=FALSE}
+g <- graph_from_data_frame(filter(edgelist,similarity>0), directed = FALSE, nodes) 
+ggraph(g,weight=similarity)+
+  geom_edge_diagonal(aes(width=similarity),alpha=0.5)+
+  geom_node_point(size=3,colour="yellow")+ 
+  # geom_node_text(aes(label = name), repel=TRUE)+
+  theme(panel.background = element_blank())+
+  theme(legend.key=element_blank())
+```
+
+Going a bit deeper, I separated each strength as a separate labeled (for each strength) and color coded (for domains) line.
+
+```{r multi-edge graph and plot,fig.fullwidth=TRUE,fig.width=11,message=FALSE}
+nodes <- unique(strengths$Name)
+
+  
+
+strengthlabels <- strengths %>%
+  group_by(Name) %>% 
+  summarize(strength=paste(Top_5_strengths,collapse="\n "))
+
+edgelist <- data.frame()
+for(i in nodes){
+  for(j in nodes){
+    if(!any(edgelist$id1==j&edgelist$id2==i)){
+      s1 <- strengths$Top_5_strengths[strengths$Name==i]
+      s2 <- strengths$Top_5_strengths[strengths$Name==j]
+      if(any(s1 %in% s2)){
+        edgelist <- rbind(edgelist,
+                          data.frame(
+                            id1=i,
+                            id2=j,
+                            strength=s1[s1 %in% s2] 
+                          )
+        )
+      }
+    }
+  }
+}
+
+test <- edgelist %>% 
+  left_join(domains,by=c("strength"="Strength")) %>% 
+  left_join(strengthlabels,by=c("id1"="Name")) %>% 
+  select(-id1) %>% 
+  rename(id1=strength.y,strength=strength.x) %>% 
+  left_join(strengthlabels,by=c("id2"="Name")) %>% 
+  select(-id2) %>% 
+  rename(id2=strength.y,strength=strength.x) %>% 
+  select(id1,id2,strength,Domain)
+  # mutate(id1=left_join(as.data.frame(id1),strengthlabels,by=c("id1"="Name")) %>% select(strength),
+  #        id2=left_join(as.data.frame(id2),strengthlabels,by=c("id2"="Name")) %>% select(strength))
+
+g <- graph_from_data_frame(test, directed = FALSE) 
+ggraph(g)+
+  geom_edge_fan(aes(color=Domain,label=strength),
+                label_alpha = 0.75,
+                label_colour = "grey",
+                angle_calc = "along")+
+  scale_edge_color_manual(values=colors)+
+  geom_node_point(size=3)+
+  geom_node_text(aes(label = name), repel=TRUE)+
+  theme(panel.background = element_blank())+
+  theme(legend.key=element_blank())
+
+```
